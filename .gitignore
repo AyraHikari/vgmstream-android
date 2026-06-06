@@ -13,3 +13,9 @@ third_party
 .DS_Store
 .externalNativeBuild
 .cxx
+*.log
+*.aab
+*.apk
+output-metadata.json
+*.jks
+*.keystore
