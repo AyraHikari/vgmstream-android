@@ -2,6 +2,8 @@
 
 Android library wrapper around [vgmstream](https://github.com/vgmstream/vgmstream).
 
+Kotlin package: `me.ayra.vgmstream`
+
 ## Current Scope
 
 - Builds `libvgmstream_jni.so` for:

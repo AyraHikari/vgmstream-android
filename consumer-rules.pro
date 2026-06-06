@@ -1,1 +1,1 @@
--keep class com.github.vgmstream.android.** { *; }
+-keep class me.ayra.vgmstream.** { *; }

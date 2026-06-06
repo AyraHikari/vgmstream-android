@@ -55,7 +55,7 @@ void throwIllegalArgument(JNIEnv* env, const char* message) {
 } // namespace
 
 extern "C" JNIEXPORT jlong JNICALL
-Java_com_github_vgmstream_android_VgmNative_open(
+Java_me_ayra_vgmstream_VgmNative_open(
         JNIEnv* env,
         jobject,
         jstring path_,
@@ -112,12 +112,12 @@ Java_com_github_vgmstream_android_VgmNative_open(
 }
 
 extern "C" JNIEXPORT void JNICALL
-Java_com_github_vgmstream_android_VgmNative_close(JNIEnv*, jobject, jlong handle) {
+Java_me_ayra_vgmstream_VgmNative_close(JNIEnv*, jobject, jlong handle) {
     delete fromHandle(handle);
 }
 
 extern "C" JNIEXPORT jint JNICALL
-Java_com_github_vgmstream_android_VgmNative_readPcm(
+Java_me_ayra_vgmstream_VgmNative_readPcm(
         JNIEnv* env,
         jobject,
         jlong handle,
@@ -155,7 +155,7 @@ Java_com_github_vgmstream_android_VgmNative_readPcm(
 }
 
 extern "C" JNIEXPORT void JNICALL
-Java_com_github_vgmstream_android_VgmNative_seek(JNIEnv* env, jobject, jlong handle, jlong positionMs) {
+Java_me_ayra_vgmstream_VgmNative_seek(JNIEnv* env, jobject, jlong handle, jlong positionMs) {
     NativeDecoder* native = fromHandle(handle);
     if (!native || !native->decoder || !native->decoder->format) {
         throwIllegalState(env, "decoder is closed");
@@ -165,14 +165,14 @@ Java_com_github_vgmstream_android_VgmNative_seek(JNIEnv* env, jobject, jlong han
 }
 
 extern "C" JNIEXPORT jlong JNICALL
-Java_com_github_vgmstream_android_VgmNative_getDuration(JNIEnv*, jobject, jlong handle) {
+Java_me_ayra_vgmstream_VgmNative_getDuration(JNIEnv*, jobject, jlong handle) {
     NativeDecoder* native = fromHandle(handle);
     if (!native || !native->decoder || !native->decoder->format) return 0;
     return sampleToMs(native->decoder->format->play_samples, native->decoder->format->sample_rate);
 }
 
 extern "C" JNIEXPORT jlong JNICALL
-Java_com_github_vgmstream_android_VgmNative_getPosition(JNIEnv*, jobject, jlong handle) {
+Java_me_ayra_vgmstream_VgmNative_getPosition(JNIEnv*, jobject, jlong handle) {
     NativeDecoder* native = fromHandle(handle);
     if (!native || !native->decoder || !native->decoder->format) return 0;
     int64_t sample = libvgmstream_get_play_position(native->decoder);
@@ -180,21 +180,21 @@ Java_com_github_vgmstream_android_VgmNative_getPosition(JNIEnv*, jobject, jlong 
 }
 
 extern "C" JNIEXPORT jint JNICALL
-Java_com_github_vgmstream_android_VgmNative_getSampleRate(JNIEnv*, jobject, jlong handle) {
+Java_me_ayra_vgmstream_VgmNative_getSampleRate(JNIEnv*, jobject, jlong handle) {
     NativeDecoder* native = fromHandle(handle);
     if (!native || !native->decoder || !native->decoder->format) return 0;
     return native->decoder->format->sample_rate;
 }
 
 extern "C" JNIEXPORT jint JNICALL
-Java_com_github_vgmstream_android_VgmNative_getChannels(JNIEnv*, jobject, jlong handle) {
+Java_me_ayra_vgmstream_VgmNative_getChannels(JNIEnv*, jobject, jlong handle) {
     NativeDecoder* native = fromHandle(handle);
     if (!native || !native->decoder || !native->decoder->format) return 0;
     return native->decoder->format->channels;
 }
 
 extern "C" JNIEXPORT jlongArray JNICALL
-Java_com_github_vgmstream_android_VgmNative_getLoopInfo(JNIEnv* env, jobject, jlong handle) {
+Java_me_ayra_vgmstream_VgmNative_getLoopInfo(JNIEnv* env, jobject, jlong handle) {
     jlong values[5] = {0, 0, 0, 0, 0};
     NativeDecoder* native = fromHandle(handle);
     if (native && native->decoder && native->decoder->format) {

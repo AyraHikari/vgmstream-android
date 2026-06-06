@@ -4,7 +4,7 @@ plugins {
 }
 
 android {
-    namespace = "com.github.vgmstream.android"
+    namespace = "me.ayra.vgmstream"
     compileSdk = 36
 
     compileOptions {

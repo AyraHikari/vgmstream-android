@@ -1,4 +1,4 @@
-package com.github.vgmstream.android
+package me.ayra.vgmstream
 
 import android.content.Context
 import android.media.AudioAttributes

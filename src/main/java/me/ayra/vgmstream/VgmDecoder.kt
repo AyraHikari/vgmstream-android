@@ -1,4 +1,4 @@
-package com.github.vgmstream.android
+package me.ayra.vgmstream
 
 class VgmDecoder internal constructor(
     private val native: VgmNative,

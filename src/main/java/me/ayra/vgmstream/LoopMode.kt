@@ -1,4 +1,4 @@
-package com.github.vgmstream.android
+package me.ayra.vgmstream
 
 enum class LoopMode(internal val nativeValue: Int) {
     Normal(0),

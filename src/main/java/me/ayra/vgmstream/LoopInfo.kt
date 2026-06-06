@@ -1,4 +1,4 @@
-package com.github.vgmstream.android
+package me.ayra.vgmstream
 
 data class LoopInfo(
     val hasLoop: Boolean,

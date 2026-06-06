@@ -1,4 +1,4 @@
-package com.github.vgmstream.android
+package me.ayra.vgmstream
 
 import android.media.MediaCodec
 import android.media.MediaExtractor

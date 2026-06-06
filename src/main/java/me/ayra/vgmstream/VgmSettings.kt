@@ -1,4 +1,4 @@
-package com.github.vgmstream.android
+package me.ayra.vgmstream
 
 data class VgmSettings(
     val loopCount: Double = 1.0,
