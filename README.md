@@ -2,8 +2,6 @@
 
 Android library wrapper around [vgmstream](https://github.com/vgmstream/vgmstream).
 
-Package: `me.ayra.vgmstream`
-
 ## Features
 
 - Android/Kotlin API for decoding vgmstream-supported game audio.
@@ -19,15 +17,75 @@ Package: `me.ayra.vgmstream`
 
 ## Architecture
 
-File
- ↓
-VgmDecoder
- ↓
-PCM (16-bit interleaved)
- ↓
-AudioTrackVgmPlayer
- ↓
-AudioTrack
+```mermaid
+flowchart LR
+  A["App / Sample"] --> B["AudioTrackVgmPlayer"]
+  A --> C["VgmDecoderFactory"]
+  B --> D["PcmDecoder"]
+  C --> D
+  D --> E["VgmDecoder"]
+  D --> F["LopuPcmDecoder"]
+  D --> G["AndroidMediaPcmDecoder"]
+  E --> H["VgmNative JNI"]
+  H --> I["libvgmstream_jni.so"]
+  I --> J["vgmstream"]
+  F --> K["Android MediaCodec Opus"]
+  G --> L["MediaExtractor + MediaCodec"]
+  D --> M["ChannelOutputPcmDecoder"]
+  M --> N["PCM 16-bit interleaved"]
+  B --> O["AudioTrack"]
+```
+
+The library has three main layers:
+
+- Kotlin API layer: `VgmPlayer`, `AudioTrackVgmPlayer`, `VgmDecoderFactory`, `PcmDecoder`, and `VgmSettings`.
+- JNI/native layer: `VgmNative` calls `src/main/cpp/vgmstream_jni.cpp`, which links native vgmstream into `libvgmstream_jni.so`.
+- Decoder fallback layer: Android `MediaCodec`-based decoders are used for LOPUS/Nintendo Opus and regular Android-supported Opus media when native vgmstream cannot open the file.
+
+### Decoder Flow
+
+`AudioTrackVgmPlayer` accepts an Android `Uri`, copies it into app cache, then opens a `PcmDecoder`.
+
+The decoder selection order is:
+
+1. Native vgmstream via `VgmDecoderFactory` and `VgmNative`.
+2. `LopuPcmDecoder` for Nintendo/Switch Opus and LOPUS-style files.
+3. `AndroidMediaPcmDecoder` for standard Android media containers such as regular Opus files.
+
+Every decoder exposes signed 16-bit interleaved PCM through the same `PcmDecoder` interface.
+
+### Settings Flow
+
+`VgmSettings` is passed into the decoder when a file is opened.
+
+Native vgmstream settings are mapped to `libvgmstream_config_t`:
+
+- `loopCount`
+- `loopMode`
+- `fadeLengthMs`
+- `fadeDelayMs`
+- `downmixChannels`
+
+`disableSubsongs` rejects files that report multiple subsongs after open. `channelOutput` is applied as a PCM post-processing stage through `ChannelOutputPcmDecoder`, so it works consistently for native and fallback decoders.
+
+### Native Build
+
+The Android library links vgmstream statically into a JNI shared library:
+
+```text
+Kotlin API -> VgmNative -> libvgmstream_jni.so -> libvgmstream
+```
+
+The native output format is forced to signed 16-bit PCM for straightforward `AudioTrack` playback and app-level PCM processing.
+
+### Sample App
+
+The sample app is a separate Android application under `sample/`. It depends on the library module as `:vgmstream` and demonstrates:
+
+- Android file picker
+- Play, pause, stop, and seek
+- Duration and current position display
+- Loop, fade, downmix, and channel output settings
 
 ## Installation
 
@@ -267,18 +325,6 @@ The library includes consumer rules for the public package:
 ```proguard
 -keep class me.ayra.vgmstream.** { *; }
 ```
-
-## Non-Goals
-
-This library does not provide:
-
-- Playlist management
-- Media library scanning
-- Cover art extraction
-- Metadata database
-- Android MediaSession integration
-- Streaming playback (HLS/DASH)
-- Compose UI components
 
 ## License
 

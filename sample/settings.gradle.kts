@@ -17,4 +17,4 @@ dependencyResolutionManagement {
 rootProject.name = "VGMStreamSample"
 include(":app")
 include(":vgmstream")
-project(":vgmstream").projectDir = file("../library")
+project(":vgmstream").projectDir = file("../")
