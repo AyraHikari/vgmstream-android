@@ -6,7 +6,7 @@ object VgmDecoderFactory {
     fun open(
         path: String,
         settings: VgmSettings = VgmSettings()
-    ): VgmDecoder {
+    ): PcmDecoder {
         val handle = native.open(
             path = path,
             loopCount = settings.loopCount,
@@ -14,9 +14,10 @@ object VgmDecoderFactory {
             loopMode = settings.loopMode.nativeValue,
             fadeDelayMs = settings.fadeDelayMs,
             disableSubsongs = settings.disableSubsongs,
-            downmixChannels = settings.normalizedDownmixChannels
+            downmixChannels = settings.normalizedDownmixChannels,
+            stereoTrack = 0
         )
-        return VgmDecoder(native, handle)
+        return applyChannelOutput(VgmDecoder(native, handle), settings)
     }
 
     fun open(
@@ -24,7 +25,7 @@ object VgmDecoderFactory {
         loopCount: Double = 1.0,
         fadeLengthMs: Long = 0L,
         loopMode: LoopMode = LoopMode.Normal
-    ): VgmDecoder = open(
+    ): PcmDecoder = open(
         path = path,
         settings = VgmSettings(
             loopCount = loopCount,
@@ -32,4 +33,13 @@ object VgmDecoderFactory {
             loopMode = loopMode
         )
     )
+
+    internal fun applyChannelOutput(decoder: PcmDecoder, settings: VgmSettings): PcmDecoder {
+        val sourceChannelIndices = settings.channelOutput.sourceChannelIndices
+        return if (sourceChannelIndices != null) {
+            ChannelOutputPcmDecoder(decoder, sourceChannelIndices)
+        } else {
+            decoder
+        }
+    }
 }

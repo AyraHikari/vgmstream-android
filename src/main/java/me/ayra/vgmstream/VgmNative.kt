@@ -8,7 +8,8 @@ internal class VgmNative {
         loopMode: Int,
         fadeDelayMs: Long,
         disableSubsongs: Boolean,
-        downmixChannels: Int
+        downmixChannels: Int,
+        stereoTrack: Int
     ): Long
 
     external fun close(handle: Long)

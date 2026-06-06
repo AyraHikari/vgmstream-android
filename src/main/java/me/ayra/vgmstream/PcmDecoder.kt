@@ -2,7 +2,7 @@ package me.ayra.vgmstream
 
 import java.io.Closeable
 
-internal interface PcmDecoder : Closeable {
+interface PcmDecoder : Closeable {
     val duration: Long
     val position: Long
     val sampleRate: Int

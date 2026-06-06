@@ -64,7 +64,8 @@ Java_me_ayra_vgmstream_VgmNative_open(
         jint loopMode,
         jlong fadeDelayMs,
         jboolean disableSubsongs,
-        jint downmixChannels) {
+        jint downmixChannels,
+        jint stereoTrack) {
     if (!path_) {
         throwIllegalArgument(env, "path is null");
         return 0;
@@ -89,6 +90,7 @@ Java_me_ayra_vgmstream_VgmNative_open(
     config.ignore_loop = loopMode == kLoopModeIgnoreLoop;
     config.allow_play_forever = loopMode == kLoopModeForever;
     config.auto_downmix_channels = downmixChannels > 0 ? downmixChannels : 0;
+    config.stereo_track = stereoTrack > 0 ? stereoTrack : 0;
 
     libvgmstream_t* decoder = libvgmstream_create(sf, 0, &config);
     libstreamfile_close(sf);

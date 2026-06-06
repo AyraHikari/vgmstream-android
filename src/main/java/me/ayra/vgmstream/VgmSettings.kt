@@ -6,7 +6,8 @@ data class VgmSettings(
     val loopMode: LoopMode = LoopMode.Normal,
     val fadeDelayMs: Long = 0L,
     val disableSubsongs: Boolean = false,
-    val downmixChannels: Int = 0
+    val downmixChannels: Int = 0,
+    val channelOutput: ChannelOutput = ChannelOutput.Auto
 ) {
     init {
         require(loopCount >= 0.0) { "loopCount must be >= 0" }

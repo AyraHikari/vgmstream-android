@@ -122,11 +122,12 @@ class AudioTrackVgmPlayer(
         }.getOrElse { vgmstreamError ->
             if (path.endsWith(".lopus", ignoreCase = true) || path.endsWith(".opus", ignoreCase = true)) {
                 runCatching {
-                    if (path.endsWith(".lopus", ignoreCase = true) || LopuPcmDecoder.canOpen(path)) {
+                    val fallback = if (path.endsWith(".lopus", ignoreCase = true) || LopuPcmDecoder.canOpen(path)) {
                         LopuPcmDecoder(path, settings)
                     } else {
                         AndroidMediaPcmDecoder(path)
                     }
+                    applyChannelOutput(fallback)
                 }
                     .getOrElse { mediaError ->
                         Log.d("AudioTrackVgmPlayer", "Unable to open Opus file. " +
@@ -141,6 +142,15 @@ class AudioTrackVgmPlayer(
                 throw vgmstreamError
             }
         }
+
+    private fun applyChannelOutput(decoder: PcmDecoder): PcmDecoder {
+        val sourceChannelIndices = settings.channelOutput.sourceChannelIndices
+        return if (sourceChannelIndices != null) {
+            ChannelOutputPcmDecoder(decoder, sourceChannelIndices)
+        } else {
+            decoder
+        }
+    }
 
     private fun createAudioTrack(decoder: PcmDecoder): AudioTrack {
         val channelMask = when (decoder.channels) {

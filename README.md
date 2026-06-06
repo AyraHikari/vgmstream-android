@@ -38,8 +38,9 @@ Kotlin package: `me.ayra.vgmstream`
 - `fadeDelayMs`
 - `disableSubsongs`
 - `downmixChannels`
+- `channelOutput`: `Auto`, `AllChannels`, `Channel1`, `Channel2`, `Channel3`, `Channel4`, `Stereo12`, `Stereo34`
 
-Native vgmstream decoding applies loop count, fade length, fade delay, loop mode, and automatic downmixing through `libvgmstream_config_t`.
+Native vgmstream decoding applies loop count, fade length, fade delay, loop mode, and automatic downmixing through `libvgmstream_config_t`. Channel output selection is applied as a PCM selection stage so it also works with fallback decoders.
 
 Internal behavior:
 
