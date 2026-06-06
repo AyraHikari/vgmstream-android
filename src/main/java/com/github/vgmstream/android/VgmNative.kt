@@ -5,7 +5,10 @@ internal class VgmNative {
         path: String,
         loopCount: Double,
         fadeLengthMs: Long,
-        loopMode: Int
+        loopMode: Int,
+        fadeDelayMs: Long,
+        disableSubsongs: Boolean,
+        downmixChannels: Int
     ): Long
 
     external fun close(handle: Long)

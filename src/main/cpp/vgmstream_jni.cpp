@@ -61,7 +61,10 @@ Java_com_github_vgmstream_android_VgmNative_open(
         jstring path_,
         jdouble loopCount,
         jlong fadeLengthMs,
-        jint loopMode) {
+        jint loopMode,
+        jlong fadeDelayMs,
+        jboolean disableSubsongs,
+        jint downmixChannels) {
     if (!path_) {
         throwIllegalArgument(env, "path is null");
         return 0;
@@ -81,9 +84,11 @@ Java_com_github_vgmstream_android_VgmNative_open(
     config.force_sfmt = LIBVGMSTREAM_SFMT_PCM16;
     config.loop_count = loopCount;
     config.fade_time = fadeLengthMs > 0 ? static_cast<double>(fadeLengthMs) / 1000.0 : 0.0;
+    config.fade_delay = fadeDelayMs > 0 ? static_cast<double>(fadeDelayMs) / 1000.0 : 0.0;
     config.play_forever = loopMode == kLoopModeForever;
     config.ignore_loop = loopMode == kLoopModeIgnoreLoop;
     config.allow_play_forever = loopMode == kLoopModeForever;
+    config.auto_downmix_channels = downmixChannels > 0 ? downmixChannels : 0;
 
     libvgmstream_t* decoder = libvgmstream_create(sf, 0, &config);
     libstreamfile_close(sf);
@@ -92,6 +97,12 @@ Java_com_github_vgmstream_android_VgmNative_open(
     if (!decoder || !decoder->format) {
         if (decoder) libvgmstream_free(decoder);
         throwIllegalArgument(env, "unsupported or invalid vgmstream file");
+        return 0;
+    }
+
+    if (disableSubsongs && decoder->format->subsong_count > 1) {
+        libvgmstream_free(decoder);
+        throwIllegalArgument(env, "file has multiple subsongs and subsongs are disabled");
         return 0;
     }
 

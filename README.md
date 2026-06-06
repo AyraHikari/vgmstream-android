@@ -24,7 +24,28 @@ Android library wrapper around [vgmstream](https://github.com/vgmstream/vgmstrea
   - `VgmDecoderFactory`
   - `VgmPlayer`
   - `AudioTrackVgmPlayer`
-  - loop settings via `LoopMode`
+  - playback settings via `VgmSettings`
+
+## Settings
+
+`VgmSettings` exposes:
+
+- `loopCount`
+- `fadeLengthMs`
+- `loopMode`: `Normal`, `Forever`, `IgnoreLoop`
+- `fadeDelayMs`
+- `disableSubsongs`
+- `downmixChannels`
+
+Native vgmstream decoding applies loop count, fade length, fade delay, loop mode, and automatic downmixing through `libvgmstream_config_t`.
+
+Internal behavior:
+
+- Unknown extensions are accepted by attempting content-based open.
+- Common extensions are accepted by attempting content-based open.
+- Tagfile parsing is not enabled.
+
+`disableSubsongs` rejects files that report multiple subsongs after open. The current API still opens the default/first subsong; explicit subsong selection can be added later.
 
 ## Build Notes
 

@@ -12,16 +12,30 @@ import kotlin.concurrent.thread
 
 class AudioTrackVgmPlayer(
     private val context: Context,
-    private val loopCount: Double = 1.0,
-    private val fadeLengthMs: Long = 0L,
-    private val loopMode: LoopMode = LoopMode.Normal
+    initialSettings: VgmSettings = VgmSettings()
 ) : VgmPlayer {
+    constructor(
+        context: Context,
+        loopCount: Double,
+        fadeLengthMs: Long,
+        loopMode: LoopMode = LoopMode.Normal
+    ) : this(
+        context,
+        VgmSettings(
+            loopCount = loopCount,
+            fadeLengthMs = fadeLengthMs,
+            loopMode = loopMode
+        )
+    )
+
     private var decoder: PcmDecoder? = null
     private var audioTrack: AudioTrack? = null
     private var playbackThread: Thread? = null
     private val playing = AtomicBoolean(false)
     private val decoderLock = Any()
     private var cachedInput: File? = null
+
+    var settings: VgmSettings = initialSettings
 
     override val duration: Long get() = decoder?.duration ?: 0L
     override val position: Long get() = decoder?.position ?: 0L
@@ -103,9 +117,7 @@ class AudioTrackVgmPlayer(
         runCatching {
             VgmDecoderFactory.open(
                 path = path,
-                loopCount = loopCount,
-                fadeLengthMs = fadeLengthMs,
-                loopMode = loopMode
+                settings = settings
             )
         }.getOrElse { vgmstreamError ->
             if (path.endsWith(".lopus", ignoreCase = true) || path.endsWith(".opus", ignoreCase = true)) {
