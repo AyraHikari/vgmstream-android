@@ -123,7 +123,7 @@ class AudioTrackVgmPlayer(
             if (path.endsWith(".lopus", ignoreCase = true) || path.endsWith(".opus", ignoreCase = true)) {
                 runCatching {
                     if (path.endsWith(".lopus", ignoreCase = true) || LopuPcmDecoder.canOpen(path)) {
-                        LopuPcmDecoder(path)
+                        LopuPcmDecoder(path, settings)
                     } else {
                         AndroidMediaPcmDecoder(path)
                     }
