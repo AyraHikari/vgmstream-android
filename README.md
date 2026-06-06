@@ -1,67 +1,97 @@
 # VGMStream Android Library
 
-Android library wrapper around [vgmstream](https://github.com/vgmstream/vgmstream).
+Android wrapper around [vgmstream](https://github.com/vgmstream/vgmstream) using JNI and Android NDK.
 
-Kotlin package: `me.ayra.vgmstream`
+This library allows Android applications to decode and play game audio formats supported by vgmstream, including Nintendo, PlayStation, Xbox, and many other proprietary game audio containers.
 
-## Current Scope
+## Features
 
-- Builds `libvgmstream_jni.so` for:
-  - `arm64-v8a`
-  - `armeabi-v7a`
-  - `x86_64`
-- Links upstream `libvgmstream` statically into the Android JNI library.
-- Exposes native operations through `VgmNative`:
-  - `open`
-  - `close`
-  - `readPcm`
-  - `seek`
-  - `getDuration`
-  - `getPosition`
-  - `getSampleRate`
-  - `getChannels`
-  - `getLoopInfo`
-- Provides Kotlin APIs:
-  - `VgmDecoder`
-  - `VgmDecoderFactory`
-  - `VgmPlayer`
-  - `AudioTrackVgmPlayer`
-  - playback settings via `VgmSettings`
+* JNI wrapper around native vgmstream
+* Android NDK compiled shared libraries (.so)
+* PCM decoding API
+* Playback position and duration support
+* Seeking support
+* Loop configuration
+* Fade length and fade delay configuration
+* Channel selection support
+* Subsong selection support
 
-## Settings
+## Supported Formats
 
-`VgmSettings` exposes:
+Supports most formats handled by vgmstream, including:
 
-- `loopCount`
-- `fadeLengthMs`
-- `loopMode`: `Normal`, `Forever`, `IgnoreLoop`
-- `fadeDelayMs`
-- `disableSubsongs`
-- `downmixChannels`
-- `channelOutput`: `Auto`, `AllChannels`, `Channel1`, `Channel2`, `Channel3`, `Channel4`, `Stereo12`, `Stereo34`
+* BCSTM
+* BFSTM
+* BRSTM
+* DSP
+* ADX
+* HCA
+* FSB
+* GENH
+* XMA
+* AT9
+* LOPUS
+* and many more
 
-Native vgmstream decoding applies loop count, fade length, fade delay, loop mode, and automatic downmixing through `libvgmstream_config_t`. Channel output selection is applied as a PCM selection stage so it also works with fallback decoders.
+See the upstream vgmstream project for the complete format list.
 
-Internal behavior:
+## Installation
 
-- Unknown extensions are accepted by attempting content-based open.
-- Common extensions are accepted by attempting content-based open.
-- Tagfile parsing is not enabled.
+TBD
 
-`disableSubsongs` rejects files that report multiple subsongs after open. The current API still opens the default/first subsong; explicit subsong selection can be added later.
+## Basic Usage
 
-## Build Notes
+```kotlin
+val player = VgmPlayer()
 
-This first pass disables external codec dependencies in CMake:
+player.open(uri)
 
-- MPEG/mpg123: off
-- Vorbis/Ogg: off
-- FFmpeg: off
-- G.719: off
-- ATRAC9: off
-- CELT: off
-- Speex: off
+player.play()
+player.pause()
 
-Core vgmstream formats backed by built-in decoders are available. OGG, MP3, and FFmpeg-backed formats need a later dependency pass.
+player.seekTo(30_000)
 
-The local Android SDK path is expected in `local.properties`; this file is intentionally gitignored.
+val duration = player.duration
+val position = player.position
+```
+
+## Playback Configuration
+
+```kotlin
+player.configure(
+    loopMode = LoopMode.NORMAL,
+    loopCount = 2,
+    fadeLengthSeconds = 10f,
+    fadeDelaySeconds = 0f
+)
+```
+
+## Channel Selection
+
+Useful for multi-channel streams such as layered Nintendo BCSTM/BFSTM audio.
+
+```kotlin
+player.setChannelOutput(
+    leftChannel = 1,
+    rightChannel = 2
+)
+```
+
+Example:
+
+```text
+1 = Left Map
+2 = Right Map
+3 = Left Battle
+4 = Right Battle
+```
+
+You can choose to play only specific channel pairs.
+
+## License
+
+This project bundles and wraps vgmstream.
+
+Please refer to the upstream project for licensing details:
+
+https://github.com/vgmstream/vgmstream
