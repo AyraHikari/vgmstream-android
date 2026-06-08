@@ -1,10 +1,10 @@
 plugins {
-    id("com.android.application")
+    id("com.android.library")
     id("org.jetbrains.kotlin.android")
 }
 
 android {
-    namespace = "me.ayra.vgmstream.sample"
+    namespace = "me.ayra.vgmstream.media3"
     compileSdk = 36
 
     compileOptions {
@@ -17,15 +17,12 @@ android {
     }
 
     defaultConfig {
-        applicationId = "me.ayra.vgmstream.sample"
         minSdk = 23
-        targetSdk = 36
-        versionCode = 1
-        versionName = "1.0"
+        consumerProguardFiles("consumer-rules.pro")
     }
 }
 
 dependencies {
-    implementation(project(":vgmstream-core"))
-    implementation(project(":vgmstream-media3"))
+    api(project(":vgmstream-core"))
+    api("androidx.media3:media3-common:1.10.0")
 }

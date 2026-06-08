@@ -7,6 +7,7 @@ Android library wrapper around [vgmstream](https://github.com/vgmstream/vgmstrea
 - Android/Kotlin API for decoding vgmstream-supported game audio.
 - JNI wrapper around native vgmstream.
 - `AudioTrack` player wrapper for simple playback.
+- Optional Media3 `Player` adapter module.
 - PCM decoder API for custom playback pipelines.
 - Seek, duration, sample rate, channel count, and loop info.
 - Loop count, fade length, fade delay, loop mode, downmix, and channel output settings.
@@ -19,24 +20,33 @@ Android library wrapper around [vgmstream](https://github.com/vgmstream/vgmstrea
 
 ```mermaid
 flowchart LR
-  A["App / Sample"] --> B["AudioTrackVgmPlayer"]
-  A --> C["VgmDecoderFactory"]
-  B --> D["PcmDecoder"]
-  C --> D
-  D --> E["VgmDecoder"]
-  D --> F["LopuPcmDecoder"]
-  D --> G["AndroidMediaPcmDecoder"]
-  E --> H["VgmNative JNI"]
-  H --> I["libvgmstream_jni.so"]
-  I --> J["vgmstream"]
-  F --> K["Android MediaCodec Opus"]
-  G --> L["MediaExtractor + MediaCodec"]
-  D --> M["ChannelOutputPcmDecoder"]
-  M --> N["PCM 16-bit interleaved"]
-  B --> O["AudioTrack"]
+  A["App / Sample"] --> B["vgmstream-core"]
+  A --> C["vgmstream-media3"]
+  C --> D["VgmPlayerAdapter : Player"]
+  D --> E["AudioTrackVgmPlayer"]
+  B --> E
+  B --> F["VgmDecoderFactory"]
+  E --> G["PcmDecoder"]
+  F --> G
+  G --> H["VgmDecoder"]
+  G --> I["LopuPcmDecoder"]
+  G --> J["AndroidMediaPcmDecoder"]
+  H --> K["VgmNative JNI"]
+  K --> L["libvgmstream_jni.so"]
+  L --> M["vgmstream"]
+  I --> N["Android MediaCodec Opus"]
+  J --> O["MediaExtractor + MediaCodec"]
+  G --> P["ChannelOutputPcmDecoder"]
+  P --> Q["PCM 16-bit interleaved"]
+  E --> R["AudioTrack"]
 ```
 
-The library has three main layers:
+The repository is split into two publishable Android library modules:
+
+- `vgmstream-core`: the decoder, JNI bridge, native build, fallback decoders, settings model, and `AudioTrackVgmPlayer`.
+- `vgmstream-media3`: a small optional Media3 integration module with `VgmPlayerAdapter`, which exposes the core player through the Media3 `Player` API.
+
+`vgmstream-core` has three main layers:
 
 - Kotlin API layer: `VgmPlayer`, `AudioTrackVgmPlayer`, `VgmDecoderFactory`, `PcmDecoder`, and `VgmSettings`.
 - JNI/native layer: `VgmNative` calls `src/main/cpp/vgmstream_jni.cpp`, which links native vgmstream into `libvgmstream_jni.so`.
@@ -78,9 +88,19 @@ Kotlin API -> VgmNative -> libvgmstream_jni.so -> libvgmstream
 
 The native output format is forced to signed 16-bit PCM for straightforward `AudioTrack` playback and app-level PCM processing.
 
+### Media3 Module
+
+`vgmstream-media3` depends on `vgmstream-core` and `androidx.media3:media3-common`. It maps the Media3 player surface to the existing core stack:
+
+```text
+Media3 Player API -> VgmPlayerAdapter -> AudioTrackVgmPlayer -> VgmDecoder
+```
+
+Use this module when you want to connect vgmstream playback to Media3-facing UI, controllers, or session code while still decoding through the core library.
+
 ### Sample App
 
-The sample app is a separate Android application under `sample/`. It depends on the library module as `:vgmstream` and demonstrates:
+The sample app is a separate Android application under `sample/`. It depends on `:vgmstream-core` and `:vgmstream-media3` and demonstrates:
 
 - Android file picker
 - Play, pause, stop, and seek
@@ -104,11 +124,19 @@ dependencyResolutionManagement {
 }
 ```
 
-Add the library dependency:
+Add the core dependency:
 
 ```kotlin
 dependencies {
-    implementation("com.github.AyraHikari:vgmstream-android:<version>")
+    implementation("com.github.AyraHikari:vgmstream-core:<version>")
+}
+```
+
+Add Media3 integration only when you need a Media3 `Player`:
+
+```kotlin
+dependencies {
+    implementation("com.github.AyraHikari:vgmstream-media3:<version>")
 }
 ```
 
@@ -119,15 +147,18 @@ Replace `<version>` with a release tag or commit hash from the repository.
 You can also include the library as a local module:
 
 ```kotlin
-include(":vgmstream")
-project(":vgmstream").projectDir = file("../library")
+include(":vgmstream-core")
+project(":vgmstream-core").projectDir = file("../library/vgmstream-core")
+include(":vgmstream-media3")
+project(":vgmstream-media3").projectDir = file("../library/vgmstream-media3")
 ```
 
 Then depend on it:
 
 ```kotlin
 dependencies {
-    implementation(project(":vgmstream"))
+    implementation(project(":vgmstream-core"))
+    implementation(project(":vgmstream-media3")) // optional
 }
 ```
 
@@ -174,6 +205,23 @@ Release resources when playback is no longer needed:
 
 ```kotlin
 player.stop()
+```
+
+## Media3 Playback
+
+Use `VgmPlayerAdapter` from `vgmstream-media3` when a Media3 `Player` is required.
+
+```kotlin
+import androidx.media3.common.MediaItem
+import androidx.media3.common.util.UnstableApi
+import me.ayra.vgmstream.media3.VgmPlayerAdapter
+
+@OptIn(UnstableApi::class)
+val player = VgmPlayerAdapter(context)
+
+player.setMediaItem(MediaItem.fromUri(uri))
+player.prepare()
+player.play()
 ```
 
 ## Playback Settings

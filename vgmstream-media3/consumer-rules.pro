@@ -1,0 +1,1 @@
+-keep class me.ayra.vgmstream.media3.** { *; }

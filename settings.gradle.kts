@@ -1,9 +1,4 @@
 pluginManagement {
-    plugins {
-        id("com.android.library") version "8.12.0"
-        id("org.jetbrains.kotlin.android") version "2.2.0"
-    }
-
     repositories {
         google()
         mavenCentral()
@@ -19,4 +14,6 @@ dependencyResolutionManagement {
     }
 }
 
-rootProject.name = "VGMStreamAndroidLibrary"
+rootProject.name = "vgmstream-android"
+include(":vgmstream-core")
+include(":vgmstream-media3")
