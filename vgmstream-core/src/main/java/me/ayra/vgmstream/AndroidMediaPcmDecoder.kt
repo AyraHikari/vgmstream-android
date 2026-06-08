@@ -38,8 +38,8 @@ internal class AndroidMediaPcmDecoder(
         val mime = requireNotNull(format.getString(MediaFormat.KEY_MIME)) {
             "missing audio mime"
         }
-        require(mime == MediaFormat.MIMETYPE_AUDIO_OPUS) {
-            "Android media fallback only supports Opus, got $mime"
+        require(mime.startsWith("audio/")) {
+            "Android media fallback only supports audio tracks, got $mime"
         }
 
         duration = if (format.containsKey(MediaFormat.KEY_DURATION)) {

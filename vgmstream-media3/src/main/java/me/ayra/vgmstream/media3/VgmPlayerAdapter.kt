@@ -1,6 +1,7 @@
 package me.ayra.vgmstream.media3
 
 import android.content.Context
+import android.os.Handler
 import android.os.Looper
 import androidx.media3.common.C
 import androidx.media3.common.MediaItem
@@ -22,6 +23,7 @@ class VgmPlayerAdapter(
     looper: Looper = Looper.getMainLooper()
 ) : SimpleBasePlayer(looper) {
     private val appContext = context.applicationContext
+    private val applicationHandler = Handler(looper)
     private val player = AudioTrackVgmPlayer(appContext, initialSettings)
     private val released = AtomicBoolean(false)
     private val stateLock = Any()
@@ -299,14 +301,17 @@ class VgmPlayerAdapter(
         monitorThread = thread(name = "VgmMedia3Monitor", isDaemon = true) {
             while (!released.get() && playWhenReady && player.isPlaying) {
                 Thread.sleep(250)
-                invalidateState()
+                invalidateStateOnApplicationThread()
             }
-            if (!released.get() && playWhenReady && playbackState == Player.STATE_READY) {
+            val shouldMarkEnded = synchronized(stateLock) {
+                !released.get() && playWhenReady && playbackState == Player.STATE_READY
+            }
+            if (shouldMarkEnded) {
                 synchronized(stateLock) {
                     playbackState = Player.STATE_ENDED
                     playWhenReady = false
                 }
-                invalidateState()
+                invalidateStateOnApplicationThread()
             }
         }
     }
@@ -318,6 +323,18 @@ class VgmPlayerAdapter(
 
     private fun mediaItemUid(item: MediaItem, index: Int): Any =
         item.mediaId.takeIf { it.isNotBlank() } ?: "vgmstream-$index"
+
+    private fun invalidateStateOnApplicationThread() {
+        if (Looper.myLooper() == applicationHandler.looper) {
+            invalidateState()
+        } else {
+            applicationHandler.post {
+                if (!released.get()) {
+                    invalidateState()
+                }
+            }
+        }
+    }
 
     private fun Long.toDurationUs(): Long =
         if (this == C.TIME_UNSET || this <= 0L) C.TIME_UNSET else this * 1_000L
