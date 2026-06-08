@@ -1,0 +1,92 @@
+name: Android Build
+
+on:
+  push:
+    branches:
+      - "**"
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    name: Build core, Media3, and sample
+    runs-on: ubuntu-latest
+
+    env:
+      ANDROID_NDK_VERSION: 28.2.13676358
+      ANDROID_CMAKE_VERSION: 3.22.1
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Set up JDK
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+
+      - name: Set up Gradle
+        uses: gradle/actions/setup-gradle@v4
+
+      - name: Install Android SDK packages
+        run: |
+          yes | sdkmanager --licenses
+          sdkmanager \
+            "platforms;android-36" \
+            "build-tools;36.0.0" \
+            "ndk;${ANDROID_NDK_VERSION}" \
+            "cmake;${ANDROID_CMAKE_VERSION}"
+
+      - name: Make Gradle wrapper executable
+        run: chmod +x gradlew
+
+      - name: Build library modules
+        run: ./gradlew :vgmstream-core:assembleDebug :vgmstream-media3:assembleDebug --stacktrace
+
+      - name: Build sample app
+        run: ./gradlew -p sample :app:assembleDebug --stacktrace
+
+      - name: Stage artifacts
+        run: |
+          mkdir -p artifacts
+          cp vgmstream-core/build/outputs/aar/*.aar artifacts/
+          cp vgmstream-media3/build/outputs/aar/*.aar artifacts/
+          cp sample/app/build/outputs/apk/debug/*.apk artifacts/
+          ls -lh artifacts
+
+      - name: Upload build artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: vgmstream-android-${{ github.run_number }}
+          path: artifacts/*
+          if-no-files-found: error
+          retention-days: 30
+
+      - name: Create pre-release
+        if: github.event_name != 'pull_request'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RUN_NUMBER: ${{ github.run_number }}
+          RUN_ATTEMPT: ${{ github.run_attempt }}
+          REF_NAME: ${{ github.ref_name }}
+          SHA: ${{ github.sha }}
+        run: |
+          safe_ref="$(printf '%s' "${REF_NAME}" | tr '/:@ ' '----' | tr -cd 'A-Za-z0-9._-')"
+          tag="pre-release-${safe_ref}-${RUN_NUMBER}-${RUN_ATTEMPT}"
+          title="Pre-release build ${RUN_NUMBER}.${RUN_ATTEMPT} (${REF_NAME})"
+
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git tag "${tag}" "${SHA}"
+          git push origin "${tag}"
+
+          gh release create "${tag}" artifacts/* \
+            --title "${title}" \
+            --notes "Automated pre-release build from ${REF_NAME} at ${SHA}." \
+            --prerelease
