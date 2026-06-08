@@ -18,6 +18,7 @@ jobs:
     env:
       ANDROID_NDK_VERSION: 28.2.13676358
       ANDROID_CMAKE_VERSION: 3.22.1
+      VGMSTREAM_REF: 7111255cef4d520dbe5cd4b661fbb18b29564850
 
     steps:
       - name: Checkout
@@ -45,6 +46,14 @@ jobs:
             "build-tools;36.0.0" \
             "ndk;${ANDROID_NDK_VERSION}" \
             "cmake;${ANDROID_CMAKE_VERSION}"
+
+      - name: Fetch vgmstream source
+        run: |
+          mkdir -p vgmstream-core/third_party
+          git init vgmstream-core/third_party/vgmstream
+          git -C vgmstream-core/third_party/vgmstream remote add origin https://github.com/vgmstream/vgmstream.git
+          git -C vgmstream-core/third_party/vgmstream fetch --depth=1 origin "${VGMSTREAM_REF}"
+          git -C vgmstream-core/third_party/vgmstream checkout FETCH_HEAD
 
       - name: Make Gradle wrapper executable
         run: chmod +x gradlew
