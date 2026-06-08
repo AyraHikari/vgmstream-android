@@ -299,9 +299,15 @@ class VgmPlayerAdapter(
     private fun startMonitoring() {
         if (monitorThread?.isAlive == true) return
         monitorThread = thread(name = "VgmMedia3Monitor", isDaemon = true) {
-            while (!released.get() && playWhenReady && player.isPlaying) {
-                Thread.sleep(250)
-                invalidateStateOnApplicationThread()
+            runCatching {
+                while (!released.get() && playWhenReady && player.isPlaying) {
+                    Thread.sleep(250)
+                    invalidateStateOnApplicationThread()
+                }
+            }.onFailure { error ->
+                if (error !is InterruptedException) throw error
+                Thread.currentThread().interrupt()
+                return@thread
             }
             val shouldMarkEnded = synchronized(stateLock) {
                 !released.get() && playWhenReady && playbackState == Player.STATE_READY
