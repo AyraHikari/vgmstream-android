@@ -31,6 +31,9 @@ class VgmPlayerAdapter(
     private var playbackState = Player.STATE_IDLE
     private var playWhenReady = false
     private var pendingStartPositionMs = 0L
+    private var repeatMode = Player.REPEAT_MODE_OFF
+    private var shuffleModeEnabled = false
+    private var volume = 1f
     private var playbackError: PlaybackException? = null
     private var monitorThread: Thread? = null
 
@@ -60,6 +63,9 @@ class VgmPlayerAdapter(
             .setContentBufferedPositionMs(PositionSupplier { player.position })
             .setPlaybackState(state)
             .setPlayWhenReady(playWhenReady, Player.PLAY_WHEN_READY_CHANGE_REASON_USER_REQUEST)
+            .setRepeatMode(repeatMode)
+            .setShuffleModeEnabled(shuffleModeEnabled)
+            .setVolume(volume)
             .setPlayerError(playbackError)
             .build()
     }
@@ -86,6 +92,78 @@ class VgmPlayerAdapter(
         return immediateFuture()
     }
 
+    override fun handleAddMediaItems(index: Int, mediaItems: List<MediaItem>): ListenableFuture<Any> {
+        synchronized(stateLock) {
+            val targetIndex = index.coerceIn(0, playlist.size)
+            playlist = playlist.toMutableList().apply { addAll(targetIndex, mediaItems) }
+            if (currentIndex == C.INDEX_UNSET && playlist.isNotEmpty()) {
+                currentIndex = 0
+            } else if (currentIndex >= targetIndex) {
+                currentIndex += mediaItems.size
+            }
+        }
+        invalidateState()
+        return immediateFuture()
+    }
+
+    override fun handleMoveMediaItems(
+        fromIndex: Int,
+        toIndex: Int,
+        newIndex: Int
+    ): ListenableFuture<Any> {
+        synchronized(stateLock) {
+            val movedItems = playlist.subList(fromIndex, toIndex).toList()
+            val updatedPlaylist = playlist.toMutableList().apply {
+                subList(fromIndex, toIndex).clear()
+                addAll(newIndex.coerceIn(0, size), movedItems)
+            }
+            val currentItem = playlist.getOrNull(currentIndex)
+            playlist = updatedPlaylist
+            currentIndex = currentItem?.let { playlist.indexOf(it) }?.takeIf { it >= 0 }
+                ?: playlist.indices.firstOrNull()
+                ?: C.INDEX_UNSET
+        }
+        invalidateState()
+        return immediateFuture()
+    }
+
+    override fun handleReplaceMediaItems(
+        fromIndex: Int,
+        toIndex: Int,
+        mediaItems: List<MediaItem>
+    ): ListenableFuture<Any> {
+        synchronized(stateLock) {
+            val currentItem = playlist.getOrNull(currentIndex)
+            playlist = playlist.toMutableList().apply {
+                subList(fromIndex, toIndex).clear()
+                addAll(fromIndex.coerceIn(0, size), mediaItems)
+            }
+            currentIndex = currentItem?.let { playlist.indexOf(it) }?.takeIf { it >= 0 }
+                ?: playlist.indices.firstOrNull()
+                ?: C.INDEX_UNSET
+        }
+        invalidateState()
+        return immediateFuture()
+    }
+
+    override fun handleRemoveMediaItems(fromIndex: Int, toIndex: Int): ListenableFuture<Any> {
+        synchronized(stateLock) {
+            val currentItem = playlist.getOrNull(currentIndex)
+            playlist = playlist.toMutableList().apply { subList(fromIndex, toIndex).clear() }
+            currentIndex = currentItem?.let { playlist.indexOf(it) }?.takeIf { it >= 0 }
+                ?: playlist.indices.firstOrNull()
+                ?: C.INDEX_UNSET
+            if (playlist.isEmpty()) {
+                player.stop()
+                stopMonitoring()
+                playbackState = Player.STATE_IDLE
+                playWhenReady = false
+            }
+        }
+        invalidateState()
+        return immediateFuture()
+    }
+
     override fun handlePrepare(): ListenableFuture<Any> {
         openCurrentItem()
         return immediateFuture()
@@ -105,6 +183,24 @@ class VgmPlayerAdapter(
             player.pause()
             stopMonitoring()
         }
+        invalidateState()
+        return immediateFuture()
+    }
+
+    override fun handleSetRepeatMode(repeatMode: Int): ListenableFuture<Any> {
+        this.repeatMode = repeatMode
+        invalidateState()
+        return immediateFuture()
+    }
+
+    override fun handleSetShuffleModeEnabled(shuffleModeEnabled: Boolean): ListenableFuture<Any> {
+        this.shuffleModeEnabled = shuffleModeEnabled
+        invalidateState()
+        return immediateFuture()
+    }
+
+    override fun handleSetVolume(volume: Float, volumeOperationType: Int): ListenableFuture<Any> {
+        this.volume = volume.coerceIn(0f, 1f)
         invalidateState()
         return immediateFuture()
     }
@@ -231,13 +327,31 @@ class VgmPlayerAdapter(
 
     private companion object {
         val AVAILABLE_COMMANDS: Player.Commands = Player.Commands.Builder()
-            .add(Player.COMMAND_SET_MEDIA_ITEM)
+            .add(Player.COMMAND_PLAY_PAUSE)
+            .add(Player.COMMAND_PREPARE)
+            .add(Player.COMMAND_STOP)
+            .add(Player.COMMAND_SEEK_TO_DEFAULT_POSITION)
+            .add(Player.COMMAND_SEEK_IN_CURRENT_MEDIA_ITEM)
+            .add(Player.COMMAND_SEEK_TO_PREVIOUS_MEDIA_ITEM)
+            .add(Player.COMMAND_SEEK_TO_PREVIOUS)
+            .add(Player.COMMAND_SEEK_TO_NEXT_MEDIA_ITEM)
+            .add(Player.COMMAND_SEEK_TO_NEXT)
+            .add(Player.COMMAND_SEEK_TO_MEDIA_ITEM)
+            .add(Player.COMMAND_SEEK_BACK)
+            .add(Player.COMMAND_SEEK_FORWARD)
+            .add(Player.COMMAND_SET_SHUFFLE_MODE)
+            .add(Player.COMMAND_SET_REPEAT_MODE)
             .add(Player.COMMAND_GET_CURRENT_MEDIA_ITEM)
             .add(Player.COMMAND_GET_TIMELINE)
-            .add(Player.COMMAND_PREPARE)
-            .add(Player.COMMAND_PLAY_PAUSE)
-            .add(Player.COMMAND_SEEK_IN_CURRENT_MEDIA_ITEM)
-            .add(Player.COMMAND_STOP)
+            .add(Player.COMMAND_GET_METADATA)
+            .add(Player.COMMAND_SET_MEDIA_ITEM)
+            .add(Player.COMMAND_CHANGE_MEDIA_ITEMS)
+            .add(Player.COMMAND_GET_AUDIO_ATTRIBUTES)
+            .add(Player.COMMAND_GET_VOLUME)
+            .add(Player.COMMAND_SET_VOLUME)
+            .add(Player.COMMAND_GET_TEXT)
+            .add(Player.COMMAND_GET_TRACKS)
+            .add(Player.COMMAND_RELEASE)
             .build()
     }
 }
