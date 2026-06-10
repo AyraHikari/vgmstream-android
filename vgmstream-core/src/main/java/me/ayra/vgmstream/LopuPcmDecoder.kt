@@ -9,7 +9,7 @@ import java.nio.ByteOrder
 
 internal class LopuPcmDecoder(
     path: String,
-    private val settings: VgmSettings = VgmSettings()
+    private val settings: VgmSettings = VgmSettings(),
 ) : PcmDecoder {
     private val file = RandomAccessFile(File(path), "r")
     private val codec: MediaCodec
@@ -36,6 +36,10 @@ internal class LopuPcmDecoder(
     private var pendingOutputSize = 0
     private var pendingOutputStartSample = 0L
     private var pendingOutputCopiedShorts = 0
+    private var pendingDiscardFrames = 0
+    private var pendingTailTrimFrames = 0
+    private var pendingLoopAfterOutput = false
+    private var pendingLoopOffset = -1L
 
     override val duration: Long
     override val sampleRate: Int
@@ -55,12 +59,13 @@ internal class LopuPcmDecoder(
         loopEndSample = header.loopEndSample.coerceAtLeast(0).toLong()
         packetIndex = buildPacketIndex(file, startOffset, header.dataSize)
         nextPacketOffset = startOffset
-        displaySamples = calculateDisplaySamples(
-            streamSamples = header.numSamples.coerceAtLeast(0).toLong(),
-            loopStart = loopStartSample,
-            loopEnd = loopEndSample,
-            settings = settings
-        )
+        displaySamples =
+            calculateDisplaySamples(
+                streamSamples = header.numSamples.coerceAtLeast(0).toLong(),
+                loopStart = loopStartSample,
+                loopEnd = loopEndSample,
+                settings = settings,
+            )
         playLimitSamples = calculatePlayLimitSamples(displaySamples, settings)
         fadeStartSample = calculateFadeStartSample(loopStartSample, loopEndSample, settings)
         fadeLengthSamples = msToSamples(settings.fadeLengthMs, sampleRate)
@@ -77,7 +82,10 @@ internal class LopuPcmDecoder(
         codec.start()
     }
 
-    override fun readPcm(buffer: ShortArray, requestedFrames: Int): Int {
+    override fun readPcm(
+        buffer: ShortArray,
+        requestedFrames: Int,
+    ): Int {
         check(!released) { "decoder is closed" }
         if (requestedFrames <= 0 || channels <= 0 || outputDone) return 0
 
@@ -108,7 +116,10 @@ internal class LopuPcmDecoder(
                         codec.releaseOutputBuffer(outputIndex, false)
                     }
                 }
-                outputIndex == MediaCodec.INFO_OUTPUT_FORMAT_CHANGED -> Unit
+
+                outputIndex == MediaCodec.INFO_OUTPUT_FORMAT_CHANGED -> {
+                    Unit
+                }
             }
 
             if (outputIndex == MediaCodec.INFO_TRY_AGAIN_LATER && inputDone && copiedShorts > 0) {
@@ -159,6 +170,9 @@ internal class LopuPcmDecoder(
 
     private fun feedInput() {
         if (inputDone) return
+        if (pendingLoopAfterOutput) {
+            return
+        }
         val inputIndex = codec.dequeueInputBuffer(0)
         if (inputIndex < 0) return
 
@@ -169,24 +183,34 @@ internal class LopuPcmDecoder(
                 0,
                 0,
                 samplesToUs(queuedSamples, sampleRate),
-                MediaCodec.BUFFER_FLAG_END_OF_STREAM
+                MediaCodec.BUFFER_FLAG_END_OF_STREAM,
             )
             inputDone = true
             return
         }
 
-        if (shouldLoopSource()) {
-            nextPacketOffset = packetOffsetForSourceSample(loopStartSample)
+        var packet = readPacketAt(nextPacketOffset)
+        if (packet != null && shouldLoopSource(packet)) {
+            val loopOffset = packetOffsetForSourceSample(loopStartSample)
+
+            pendingTailTrimFrames =
+                (
+                    sourceSampleForPacketOffset(nextPacketOffset) +
+                        packet.sampleCount -
+                        loopEndSample
+                ).coerceAtLeast(0).toInt()
+
+            pendingLoopAfterOutput = true
+            pendingLoopOffset = loopOffset
         }
 
-        val packet = readPacketAt(nextPacketOffset)
         if (inputBuffer == null || packet == null) {
             codec.queueInputBuffer(
                 inputIndex,
                 0,
                 0,
                 samplesToUs(queuedSamples, sampleRate),
-                MediaCodec.BUFFER_FLAG_END_OF_STREAM
+                MediaCodec.BUFFER_FLAG_END_OF_STREAM,
             )
             inputDone = true
             return
@@ -203,14 +227,30 @@ internal class LopuPcmDecoder(
         queuedSamples = (queuedSamples + packet.sampleCount).coerceAtMost(playLimitSamples)
     }
 
-    private fun shouldLoopSource(): Boolean =
-            hasUsableLoop() &&
-            settings.loopMode != LoopMode.IgnoreLoop &&
-            queuedSamples < playLimitSamples &&
-            sourceSampleForPacketOffset(nextPacketOffset) >= loopEndSample
+    private fun shouldLoopSource(packet: Packet): Boolean {
+        if (!hasUsableLoop()) return false
+        if (settings.loopMode == LoopMode.IgnoreLoop) return false
 
-    private fun hasUsableLoop(): Boolean =
-        loopEndSample > loopStartSample && loopStartSample >= 0L
+        val packetStart = sourceSampleForPacketOffset(nextPacketOffset)
+        val packetEnd = packetStart + packet.sampleCount
+
+        pendingTailTrimFrames =
+            (packetStart + packet.sampleCount - loopEndSample)
+                .coerceAtLeast(0)
+                .toInt()
+
+        if (packetEnd > loopEndSample) {
+            println(
+                "QUEUE LAST packetStart=$packetStart " +
+                    "packetEnd=$packetEnd " +
+                    "tailTrim=$pendingTailTrimFrames",
+            )
+        }
+
+        return packetEnd > loopEndSample
+    }
+
+    private fun hasUsableLoop(): Boolean = loopEndSample > loopStartSample && loopStartSample >= 0L
 
     private fun sourceSampleForPlaySample(playSample: Long): Long {
         if (!hasUsableLoop() || settings.loopMode == LoopMode.IgnoreLoop || playSample < loopEndSample) {
@@ -224,6 +264,16 @@ internal class LopuPcmDecoder(
     private fun packetOffsetForSourceSample(sourceSample: Long): Long {
         if (packetIndex.isEmpty()) return startOffset
         val index = packetIndex.indexOfLast { it.startSample <= sourceSample }
+
+        val idx =
+            packetIndex.indexOfLast {
+                it.startSample <= loopStartSample
+            }
+        println(
+            "loopStart=$loopStartSample " +
+                "idx=$idx " +
+                "packetStart=${packetIndex[idx].startSample}",
+        )
         return packetIndex.getOrElse(index.coerceAtLeast(0)) { packetIndex.first() }.offset
     }
 
@@ -246,7 +296,11 @@ internal class LopuPcmDecoder(
         return Packet(payload, opusPacketSampleCount(payload), nextOffset)
     }
 
-    private fun copyPendingOutput(buffer: ShortArray, outputOffset: Int, maxShorts: Int): Int {
+    private fun copyPendingOutput(
+        buffer: ShortArray,
+        outputOffset: Int,
+        maxShorts: Int,
+    ): Int {
         val outputBuffer = codec.getOutputBuffer(pendingOutputIndex) ?: return 0
         outputBuffer.order(ByteOrder.nativeOrder())
         outputBuffer.position(pendingOutputOffset)
@@ -255,27 +309,123 @@ internal class LopuPcmDecoder(
         val shortsToCopy = minOf(maxShorts, pendingOutputSize / BYTES_PER_SHORT)
         val shortBuffer = outputBuffer.slice().order(ByteOrder.nativeOrder()).asShortBuffer()
         val temp = ShortArray(shortsToCopy)
+
+        println(
+            "COPY tail=$pendingTailTrimFrames " +
+                "outputFrames=${temp.size / channels}",
+        )
+
         shortBuffer.get(temp, 0, shortsToCopy)
         applyFade(temp, shortsToCopy)
-        temp.copyInto(buffer, outputOffset, 0, shortsToCopy)
+
+        var startFrame = 0
+        var endFrame = temp.size / channels
+
+        if (pendingDiscardFrames > 0) {
+            val discardFrames =
+                minOf(
+                    pendingDiscardFrames,
+                    endFrame,
+                )
+
+            startFrame += discardFrames
+            pendingDiscardFrames -= discardFrames
+        }
+
+        if (pendingTailTrimFrames > 0) {
+            val trimFrames =
+                minOf(
+                    pendingTailTrimFrames,
+                    endFrame - startFrame,
+                )
+
+            endFrame -= trimFrames
+            pendingTailTrimFrames -= trimFrames
+        }
+
+        println(
+            "COPY discard=$pendingDiscardFrames " +
+                "tail=$pendingTailTrimFrames " +
+                "frames=${temp.size / channels}",
+        )
+
+        val startShort = startFrame * channels
+        val endShort = endFrame * channels
+        val remainingShorts = endShort - startShort
+
+        if (remainingShorts <= 0) {
+            val bytesCopied = shortsToCopy * BYTES_PER_SHORT
+
+            pendingOutputOffset += bytesCopied
+            pendingOutputSize -= bytesCopied
+
+            if (pendingOutputSize <= 0) {
+                codec.releaseOutputBuffer(pendingOutputIndex, false)
+                pendingOutputIndex = -1
+                pendingOutputOffset = 0
+            }
+
+            return 0
+        }
+
+        temp.copyInto(
+            destination = buffer,
+            destinationOffset = outputOffset,
+            startIndex = startShort,
+            endIndex = endShort,
+        )
 
         val bytesCopied = shortsToCopy * BYTES_PER_SHORT
         pendingOutputOffset += bytesCopied
         pendingOutputSize -= bytesCopied
         pendingOutputCopiedShorts += shortsToCopy
-        currentPositionUs = samplesToUs(
-            pendingOutputStartSample + (pendingOutputCopiedShorts / channels).toLong(),
-            sampleRate
-        )
+        currentPositionUs =
+            samplesToUs(
+                pendingOutputStartSample + (pendingOutputCopiedShorts / channels).toLong(),
+                sampleRate,
+            )
         if (pendingOutputSize <= 0) {
+            if (
+                pendingLoopAfterOutput &&
+                pendingTailTrimFrames <= 0
+            ) {
+                val packetStart =
+                    sourceSampleForPacketOffset(pendingLoopOffset)
+
+                pendingDiscardFrames =
+                    (
+                        loopStartSample -
+                            packetStart
+                    ).coerceAtLeast(0).toInt()
+
+                nextPacketOffset = pendingLoopOffset
+
+                println(
+                    "LOOP NOW discard=$pendingDiscardFrames",
+                )
+
+                pendingLoopAfterOutput = false
+                pendingLoopOffset = -1L
+            }
+
             codec.releaseOutputBuffer(pendingOutputIndex, false)
             pendingOutputIndex = -1
             pendingOutputOffset = 0
         }
-        return shortsToCopy
+
+        if (pendingTailTrimFrames > 0) {
+            println(
+                "TAIL trimRemaining=$pendingTailTrimFrames " +
+                    "bufferFrames=${temp.size / channels}",
+            )
+        }
+        return remainingShorts
     }
 
-    private fun applyFade(samples: ShortArray, sampleCount: Int) {
+    private fun applyFade(
+        samples: ShortArray,
+        sampleCount: Int,
+    ) {
         if (fadeLengthSamples <= 0L || channels <= 0) return
 
         var index = 0
@@ -304,13 +454,13 @@ internal class LopuPcmDecoder(
     private data class Packet(
         val payload: ByteArray,
         val sampleCount: Int,
-        val nextOffset: Long
+        val nextOffset: Long,
     )
 
     private data class PacketIndex(
         val offset: Long,
         val startSample: Long,
-        val sampleCount: Int
+        val sampleCount: Int,
     )
 
     private data class ParsedHeader(
@@ -321,7 +471,7 @@ internal class LopuPcmDecoder(
         val preSkipSamples: Int,
         val numSamples: Int,
         val loopStartSample: Int,
-        val loopEndSample: Int
+        val loopEndSample: Int,
     )
 
     companion object {
@@ -364,7 +514,7 @@ internal class LopuPcmDecoder(
                     preSkipSamples = preSkip,
                     numSamples = adjustedSamples,
                     loopStartSample = loopStart,
-                    loopEndSample = loopEnd
+                    loopEndSample = loopEnd,
                 )
             }
 
@@ -374,7 +524,7 @@ internal class LopuPcmDecoder(
                     baseOffset = file.readUInt32BE(0x20L),
                     fallbackNumSamples = file.readInt32BE(0x08L),
                     fallbackLoopStart = file.readInt32BE(0x14L),
-                    fallbackLoopEnd = file.readInt32BE(0x18L)
+                    fallbackLoopEnd = file.readInt32BE(0x18L),
                 )
             }
 
@@ -388,7 +538,7 @@ internal class LopuPcmDecoder(
                     baseOffset = 0x10L,
                     fallbackNumSamples = 0,
                     fallbackLoopStart = file.readInt32LE(0x00L),
-                    fallbackLoopEnd = file.readInt32LE(0x08L)
+                    fallbackLoopEnd = file.readInt32LE(0x08L),
                 )
             }
 
@@ -402,7 +552,7 @@ internal class LopuPcmDecoder(
                     baseOffset = file.readUInt32LE(0x1CL),
                     fallbackNumSamples = file.readInt32LE(0x00L),
                     fallbackLoopStart = file.readInt32LE(0x08L),
-                    fallbackLoopEnd = file.readInt32LE(0x0CL)
+                    fallbackLoopEnd = file.readInt32LE(0x0CL),
                 )
             }
 
@@ -419,7 +569,7 @@ internal class LopuPcmDecoder(
             baseOffset: Long,
             fallbackNumSamples: Int,
             fallbackLoopStart: Int,
-            fallbackLoopEnd: Int
+            fallbackLoopEnd: Int,
         ): ParsedHeader {
             require(file.hasSwitchOpusAt(baseOffset)) { "missing supported Opus header" }
 
@@ -456,7 +606,7 @@ internal class LopuPcmDecoder(
                 preSkipSamples = preSkip,
                 numSamples = numSamples,
                 loopStartSample = loopStart,
-                loopEndSample = loopEnd
+                loopEndSample = loopEnd,
             )
         }
 
@@ -467,8 +617,10 @@ internal class LopuPcmDecoder(
             if (length() < 0x10L + HEADER_SIZE) return false
             val firstSentinel = readUInt32BE(0x04L)
             val secondSentinel = readUInt32BE(0x0CL)
-            return ((firstSentinel == 0x0000_0000L && secondSentinel == 0x0000_0000L) ||
-                (firstSentinel == 0xFFFF_FFFFL && secondSentinel == 0xFFFF_FFFFL)) &&
+            return (
+                (firstSentinel == 0x0000_0000L && secondSentinel == 0x0000_0000L) ||
+                    (firstSentinel == 0xFFFF_FFFFL && secondSentinel == 0xFFFF_FFFFL)
+            ) &&
                 hasSwitchOpusAt(0x10L)
         }
 
@@ -494,7 +646,11 @@ internal class LopuPcmDecoder(
             return -1L
         }
 
-        private fun countPacketSamples(file: RandomAccessFile, startOffset: Long, dataSize: Long): Int {
+        private fun countPacketSamples(
+            file: RandomAccessFile,
+            startOffset: Long,
+            dataSize: Long,
+        ): Int {
             var samples = 0L
             for (packet in buildPacketIndex(file, startOffset, dataSize)) {
                 samples += packet.sampleCount
@@ -502,7 +658,11 @@ internal class LopuPcmDecoder(
             return samples.coerceAtMost(Int.MAX_VALUE.toLong()).toInt()
         }
 
-        private fun buildPacketIndex(file: RandomAccessFile, startOffset: Long, dataSize: Long): List<PacketIndex> {
+        private fun buildPacketIndex(
+            file: RandomAccessFile,
+            startOffset: Long,
+            dataSize: Long,
+        ): List<PacketIndex> {
             var offset = startOffset
             val endOffset = (startOffset + dataSize).coerceAtMost(file.length())
             var samples = 0L
@@ -530,7 +690,7 @@ internal class LopuPcmDecoder(
             streamSamples: Long,
             loopStart: Long,
             loopEnd: Long,
-            settings: VgmSettings
+            settings: VgmSettings,
         ): Long {
             if (settings.loopMode == LoopMode.IgnoreLoop || loopEnd <= loopStart) {
                 return streamSamples
@@ -547,7 +707,10 @@ internal class LopuPcmDecoder(
                 msToSamples(settings.fadeLengthMs, OPUS_SAMPLE_RATE)
         }
 
-        private fun calculatePlayLimitSamples(displaySamples: Long, settings: VgmSettings): Long =
+        private fun calculatePlayLimitSamples(
+            displaySamples: Long,
+            settings: VgmSettings,
+        ): Long =
             if (settings.loopMode == LoopMode.Forever) {
                 Long.MAX_VALUE / 4
             } else {
@@ -557,7 +720,7 @@ internal class LopuPcmDecoder(
         private fun calculateFadeStartSample(
             loopStart: Long,
             loopEnd: Long,
-            settings: VgmSettings
+            settings: VgmSettings,
         ): Long {
             if (settings.fadeLengthMs <= 0L ||
                 settings.loopMode != LoopMode.Normal ||
@@ -573,38 +736,53 @@ internal class LopuPcmDecoder(
                 msToSamples(settings.fadeDelayMs, OPUS_SAMPLE_RATE)
         }
 
-        private fun opusInitializationData(channels: Int, preSkipSamples: Int, sampleRate: Int): List<ByteArray> {
-            val header = ByteBuffer.allocate(19).order(ByteOrder.LITTLE_ENDIAN).apply {
-                put("OpusHead".toByteArray(Charsets.US_ASCII))
-                put(1)
-                put(channels.toByte())
-                putShort(preSkipSamples.toShort())
-                putInt(sampleRate)
-                putShort(0)
-                put(0)
-            }.array()
+        private fun opusInitializationData(
+            channels: Int,
+            preSkipSamples: Int,
+            sampleRate: Int,
+        ): List<ByteArray> {
+            val header =
+                ByteBuffer
+                    .allocate(19)
+                    .order(ByteOrder.LITTLE_ENDIAN)
+                    .apply {
+                        put("OpusHead".toByteArray(Charsets.US_ASCII))
+                        put(1)
+                        put(channels.toByte())
+                        putShort(preSkipSamples.toShort())
+                        putInt(sampleRate)
+                        putShort(0)
+                        put(0)
+                    }.array()
 
             return listOf(
                 header,
                 nativeLongBytes(samplesToNs(preSkipSamples.toLong(), OPUS_SAMPLE_RATE)),
-                nativeLongBytes(samplesToNs(DEFAULT_SEEK_PRE_ROLL_SAMPLES.toLong(), OPUS_SAMPLE_RATE))
+                nativeLongBytes(samplesToNs(DEFAULT_SEEK_PRE_ROLL_SAMPLES.toLong(), OPUS_SAMPLE_RATE)),
             )
         }
 
         private fun opusPacketSampleCount(packet: ByteArray): Int {
             if (packet.isEmpty()) return 0
-            val frames = when (packet[0].toInt() and 0x03) {
-                0 -> 1
-                1, 2 -> 2
-                else -> if (packet.size < 2) 0 else packet[1].toInt() and 0x3F
-            }
+            val frames =
+                when (packet[0].toInt() and 0x03) {
+                    0 -> 1
+                    1, 2 -> 2
+                    else -> if (packet.size < 2) 0 else packet[1].toInt() and 0x3F
+                }
             return frames * opusSamplesPerFrame(packet[0].toInt() and 0xFF)
         }
 
-        private fun opusSamplesPerFrame(toc: Int): Int {
-            return when {
-                toc and 0x80 != 0 -> (OPUS_SAMPLE_RATE shl ((toc shr 3) and 0x03)) / 400
-                toc and 0x60 == 0x60 -> if (toc and 0x08 != 0) OPUS_SAMPLE_RATE / 50 else OPUS_SAMPLE_RATE / 100
+        private fun opusSamplesPerFrame(toc: Int): Int =
+            when {
+                toc and 0x80 != 0 -> {
+                    (OPUS_SAMPLE_RATE shl ((toc shr 3) and 0x03)) / 400
+                }
+
+                toc and 0x60 == 0x60 -> {
+                    if (toc and 0x08 != 0) OPUS_SAMPLE_RATE / 50 else OPUS_SAMPLE_RATE / 100
+                }
+
                 else -> {
                     val audioSize = (toc shr 3) and 0x03
                     if (audioSize == 3) {
@@ -614,29 +792,45 @@ internal class LopuPcmDecoder(
                     }
                 }
             }
-        }
 
         private fun nativeLongBytes(value: Long): ByteArray =
-            ByteBuffer.allocate(8).order(ByteOrder.nativeOrder()).putLong(value).array()
+            ByteBuffer
+                .allocate(8)
+                .order(ByteOrder.nativeOrder())
+                .putLong(value)
+                .array()
 
-        private fun samplesToMs(samples: Long, sampleRate: Int): Long =
-            if (sampleRate <= 0) 0L else samples * 1000L / sampleRate
+        private fun samplesToMs(
+            samples: Long,
+            sampleRate: Int,
+        ): Long = if (sampleRate <= 0) 0L else samples * 1000L / sampleRate
 
-        private fun samplesToUs(samples: Long, sampleRate: Int): Long =
-            if (sampleRate <= 0) 0L else samples * 1_000_000L / sampleRate
+        private fun samplesToUs(
+            samples: Long,
+            sampleRate: Int,
+        ): Long = if (sampleRate <= 0) 0L else samples * 1_000_000L / sampleRate
 
-        private fun samplesToNs(samples: Long, sampleRate: Int): Long =
-            if (sampleRate <= 0) 0L else samples * 1_000_000_000L / sampleRate
+        private fun samplesToNs(
+            samples: Long,
+            sampleRate: Int,
+        ): Long = if (sampleRate <= 0) 0L else samples * 1_000_000_000L / sampleRate
 
-        private fun msToSamples(ms: Long, sampleRate: Int): Long =
-            if (sampleRate <= 0) 0L else ms * sampleRate / 1000L
+        private fun msToSamples(
+            ms: Long,
+            sampleRate: Int,
+        ): Long = if (sampleRate <= 0) 0L else ms * sampleRate / 1000L
 
-        private fun usToSamples(us: Long, sampleRate: Int): Long =
-            if (sampleRate <= 0) 0L else us * sampleRate / 1_000_000L
+        private fun usToSamples(
+            us: Long,
+            sampleRate: Int,
+        ): Long = if (sampleRate <= 0) 0L else us * sampleRate / 1_000_000L
     }
 }
 
-private fun RandomAccessFile.readAscii(offset: Long, length: Int): String {
+private fun RandomAccessFile.readAscii(
+    offset: Long,
+    length: Int,
+): String {
     val bytes = ByteArray(length)
     seek(offset)
     readFully(bytes)
@@ -664,8 +858,7 @@ private fun RandomAccessFile.readInt32LE(offset: Long): Int {
     return b0 or (b1 shl 8) or (b2 shl 16) or (b3 shl 24)
 }
 
-private fun RandomAccessFile.readUInt32LE(offset: Long): Long =
-    readInt32LE(offset).toLong() and 0xFFFF_FFFFL
+private fun RandomAccessFile.readUInt32LE(offset: Long): Long = readInt32LE(offset).toLong() and 0xFFFF_FFFFL
 
 private fun RandomAccessFile.readUInt32BE(offset: Long): Long {
     seek(offset)
@@ -676,5 +869,4 @@ private fun RandomAccessFile.readUInt32BE(offset: Long): Long {
     return ((b0.toLong() shl 24) or (b1.toLong() shl 16) or (b2.toLong() shl 8) or b3.toLong()) and 0xFFFF_FFFFL
 }
 
-private fun RandomAccessFile.readInt32BE(offset: Long): Int =
-    readUInt32BE(offset).toInt()
+private fun RandomAccessFile.readInt32BE(offset: Long): Int = readUInt32BE(offset).toInt()
