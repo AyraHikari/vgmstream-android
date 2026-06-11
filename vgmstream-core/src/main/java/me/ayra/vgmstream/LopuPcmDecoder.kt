@@ -2,6 +2,7 @@ package me.ayra.vgmstream
 
 import android.media.MediaCodec
 import android.media.MediaFormat
+import android.util.Log
 import java.io.File
 import java.io.RandomAccessFile
 import java.nio.ByteBuffer
@@ -40,6 +41,11 @@ internal class LopuPcmDecoder(
     private var pendingTailTrimFrames = 0
     private var pendingLoopAfterOutput = false
     private var pendingLoopOffset = -1L
+    private var pendingCodecFlushBeforeInput = false
+    private var loopDebugId = 0
+    private var pendingLoopDebugId = 0
+    private var awaitingLoopStartComparison = false
+    private var loopEndFrameSnapshot: IntArray? = null
 
     override val duration: Long
     override val sampleRate: Int
@@ -70,6 +76,14 @@ internal class LopuPcmDecoder(
         fadeStartSample = calculateFadeStartSample(loopStartSample, loopEndSample, settings)
         fadeLengthSamples = msToSamples(settings.fadeLengthMs, sampleRate)
         duration = samplesToMs(displaySamples, sampleRate)
+
+        logLoopDebug(
+            "init sampleRate=$sampleRate channels=$channels preSkip=$preSkipSamples " +
+                "streamSamples=${header.numSamples} displaySamples=$displaySamples " +
+                "loopMode=${settings.loopMode} loopStart=$loopStartSample loopEnd=$loopEndSample " +
+                "loopLength=${(loopEndSample - loopStartSample).coerceAtLeast(0L)} " +
+                "packetCount=${packetIndex.size}",
+        )
 
         val format = MediaFormat.createAudioFormat(MediaFormat.MIMETYPE_AUDIO_OPUS, sampleRate, channels)
         format.setLong(MediaFormat.KEY_DURATION, duration * 1000L)
@@ -166,12 +180,26 @@ internal class LopuPcmDecoder(
         pendingOutputSize = 0
         pendingOutputStartSample = 0L
         pendingOutputCopiedShorts = 0
+        pendingDiscardFrames = 0
+        pendingTailTrimFrames = 0
+        pendingLoopAfterOutput = false
+        pendingLoopOffset = -1L
+        pendingCodecFlushBeforeInput = false
+        awaitingLoopStartComparison = false
+        loopEndFrameSnapshot = null
     }
 
     private fun feedInput() {
         if (inputDone) return
         if (pendingLoopAfterOutput) {
             return
+        }
+        if (pendingCodecFlushBeforeInput) {
+            codec.flush()
+            pendingCodecFlushBeforeInput = false
+            inputDone = false
+            outputDone = false
+            logLoopDebug("loop#$pendingLoopDebugId codecFlushedBeforeLoopPreroll")
         }
         val inputIndex = codec.dequeueInputBuffer(0)
         if (inputIndex < 0) return
@@ -191,7 +219,12 @@ internal class LopuPcmDecoder(
 
         var packet = readPacketAt(nextPacketOffset)
         if (packet != null && shouldLoopSource(packet)) {
-            val loopOffset = packetOffsetForSourceSample(loopStartSample)
+            val loopPrerollSample = (loopStartSample - DEFAULT_SEEK_PRE_ROLL_SAMPLES).coerceAtLeast(0L)
+            val loopOffset = packetOffsetForSourceSample(loopPrerollSample)
+            val packetStart = sourceSampleForPacketOffset(nextPacketOffset)
+            val packetEnd = packetStart + packet.sampleCount
+            val loopPacketStart = sourceSampleForPacketOffset(loopOffset)
+            val discardAtLoopStart = (loopStartSample - loopPacketStart).coerceAtLeast(0).toInt()
 
             pendingTailTrimFrames =
                 (
@@ -202,6 +235,19 @@ internal class LopuPcmDecoder(
 
             pendingLoopAfterOutput = true
             pendingLoopOffset = loopOffset
+            loopDebugId += 1
+            pendingLoopDebugId = loopDebugId
+            loopEndFrameSnapshot = null
+            awaitingLoopStartComparison = false
+            logLoopDebug(
+                "loop#$pendingLoopDebugId queueLastPacket " +
+                    "playPts=${samplesToUs(queuedSamples, sampleRate)} queuedSamples=$queuedSamples " +
+                    "packetOffset=$nextPacketOffset packetStart=$packetStart packetEnd=$packetEnd " +
+                    "packetSamples=${packet.sampleCount} loopEnd=$loopEndSample " +
+                    "tailTrim=$pendingTailTrimFrames loopOffset=$loopOffset " +
+                    "loopPrerollSample=$loopPrerollSample loopPacketStart=$loopPacketStart loopStart=$loopStartSample " +
+                    "discardAtLoopStart=$discardAtLoopStart",
+            )
         }
 
         if (inputBuffer == null || packet == null) {
@@ -239,14 +285,6 @@ internal class LopuPcmDecoder(
                 .coerceAtLeast(0)
                 .toInt()
 
-        if (packetEnd > loopEndSample) {
-            println(
-                "QUEUE LAST packetStart=$packetStart " +
-                    "packetEnd=$packetEnd " +
-                    "tailTrim=$pendingTailTrimFrames",
-            )
-        }
-
         return packetEnd > loopEndSample
     }
 
@@ -264,16 +302,6 @@ internal class LopuPcmDecoder(
     private fun packetOffsetForSourceSample(sourceSample: Long): Long {
         if (packetIndex.isEmpty()) return startOffset
         val index = packetIndex.indexOfLast { it.startSample <= sourceSample }
-
-        val idx =
-            packetIndex.indexOfLast {
-                it.startSample <= loopStartSample
-            }
-        println(
-            "loopStart=$loopStartSample " +
-                "idx=$idx " +
-                "packetStart=${packetIndex[idx].startSample}",
-        )
         return packetIndex.getOrElse(index.coerceAtLeast(0)) { packetIndex.first() }.offset
     }
 
@@ -310,16 +338,15 @@ internal class LopuPcmDecoder(
         val shortBuffer = outputBuffer.slice().order(ByteOrder.nativeOrder()).asShortBuffer()
         val temp = ShortArray(shortsToCopy)
 
-        println(
-            "COPY tail=$pendingTailTrimFrames " +
-                "outputFrames=${temp.size / channels}",
-        )
-
         shortBuffer.get(temp, 0, shortsToCopy)
         applyFade(temp, shortsToCopy)
 
         var startFrame = 0
         var endFrame = temp.size / channels
+        val originalStartFrame = startFrame
+        val originalEndFrame = endFrame
+        val discardBefore = pendingDiscardFrames
+        val tailTrimBefore = pendingTailTrimFrames
 
         if (pendingDiscardFrames > 0) {
             val discardFrames =
@@ -343,21 +370,29 @@ internal class LopuPcmDecoder(
             pendingTailTrimFrames -= trimFrames
         }
 
-        println(
-            "COPY discard=$pendingDiscardFrames " +
-                "tail=$pendingTailTrimFrames " +
-                "frames=${temp.size / channels}",
-        )
-
         val startShort = startFrame * channels
         val endShort = endFrame * channels
         val remainingShorts = endShort - startShort
+
+        if (pendingLoopDebugId > 0 && (discardBefore > 0 || tailTrimBefore > 0 || pendingLoopAfterOutput)) {
+            logLoopDebug(
+                "loop#$pendingLoopDebugId copyOutput " +
+                    "pts=${samplesToUs(pendingOutputStartSample, sampleRate)} " +
+                    "outputStartSample=$pendingOutputStartSample " +
+                    "copiedBeforeFrames=${pendingOutputCopiedShorts / channels} " +
+                    "bufferFrames=${temp.size / channels} originalFrames=$originalStartFrame..$originalEndFrame " +
+                    "keptFrames=$startFrame..$endFrame kept=${remainingShorts / channels} " +
+                    "discardBefore=$discardBefore discardAfter=$pendingDiscardFrames " +
+                    "tailBefore=$tailTrimBefore tailAfter=$pendingTailTrimFrames",
+            )
+        }
 
         if (remainingShorts <= 0) {
             val bytesCopied = shortsToCopy * BYTES_PER_SHORT
 
             pendingOutputOffset += bytesCopied
             pendingOutputSize -= bytesCopied
+            pendingOutputCopiedShorts += shortsToCopy
 
             if (pendingOutputSize <= 0) {
                 codec.releaseOutputBuffer(pendingOutputIndex, false)
@@ -366,6 +401,57 @@ internal class LopuPcmDecoder(
             }
 
             return 0
+        }
+
+        if (awaitingLoopStartComparison) {
+            val firstLoopFrame = captureFrame(temp, startShort)
+            val endFrameSnapshot = loopEndFrameSnapshot
+            val bestMatch = findClosestFrame(
+                samples = temp,
+                target = endFrameSnapshot,
+                startFrame = startFrame,
+                endFrame = endFrame,
+            )
+            val firstScore = frameDistance(endFrameSnapshot, firstLoopFrame)
+            val bestFrameOffsetFromKept = bestMatch?.let { it.frameIndex - startFrame }
+            val declickFrames =
+                applyLoopBoundaryDeclick(
+                    samples = temp,
+                    startFrame = startFrame,
+                    endFrame = endFrame,
+                    previousFrame = endFrameSnapshot,
+                    nextFrame = firstLoopFrame,
+                )
+            val adjustedStartFrame = captureFrame(temp, startShort)
+            logLoopDebug(
+                "loop#$pendingLoopDebugId boundaryCompare " +
+                    "endFrame=${formatFrame(endFrameSnapshot)} " +
+                    "startFrame=${formatFrame(firstLoopFrame)} " +
+                    "delta=${formatFrameDelta(endFrameSnapshot, firstLoopFrame)} " +
+                    "score=$firstScore " +
+                    "startOutputSample=${pendingOutputStartSample + startFrame} " +
+                    "adjustedStartFrame=${formatFrame(adjustedStartFrame)} " +
+                    "adjustedDelta=${formatFrameDelta(endFrameSnapshot, adjustedStartFrame)} " +
+                    "declickFrames=$declickFrames " +
+                    "bestFrame=${formatFrame(bestMatch?.frame)} " +
+                    "bestDelta=${formatFrameDelta(endFrameSnapshot, bestMatch?.frame)} " +
+                    "bestScore=${bestMatch?.score} " +
+                    "bestFrameOffsetFromKept=$bestFrameOffsetFromKept " +
+                    "preSkipFrame=${formatFrame(captureFrame(temp, (startFrame - preSkipSamples) * channels))} " +
+                    "postSkipFrame=${formatFrame(captureFrame(temp, (startFrame + preSkipSamples) * channels))}",
+            )
+            awaitingLoopStartComparison = false
+            loopEndFrameSnapshot = null
+        }
+
+        if (pendingLoopAfterOutput && pendingTailTrimFrames <= 0) {
+            loopEndFrameSnapshot = captureFrame(temp, endShort - channels)
+            logLoopDebug(
+                "loop#$pendingLoopDebugId loopEndFrame " +
+                    "sourceSample=${loopEndSample - 1} " +
+                    "outputSample=${pendingOutputStartSample + endFrame - 1} " +
+                    "frame=${formatFrame(loopEndFrameSnapshot)}",
+            )
         }
 
         temp.copyInto(
@@ -399,9 +485,14 @@ internal class LopuPcmDecoder(
                     ).coerceAtLeast(0).toInt()
 
                 nextPacketOffset = pendingLoopOffset
+                pendingCodecFlushBeforeInput = true
 
-                println(
-                    "LOOP NOW discard=$pendingDiscardFrames",
+                awaitingLoopStartComparison = true
+                logLoopDebug(
+                    "loop#$pendingLoopDebugId switchToLoopStart " +
+                        "nextPacketOffset=$nextPacketOffset packetStart=$packetStart " +
+                        "loopStart=$loopStartSample discard=$pendingDiscardFrames codecFlushPending=true " +
+                        "lastEndFrame=${formatFrame(loopEndFrameSnapshot)}",
                 )
 
                 pendingLoopAfterOutput = false
@@ -412,14 +503,102 @@ internal class LopuPcmDecoder(
             pendingOutputIndex = -1
             pendingOutputOffset = 0
         }
-
-        if (pendingTailTrimFrames > 0) {
-            println(
-                "TAIL trimRemaining=$pendingTailTrimFrames " +
-                    "bufferFrames=${temp.size / channels}",
-            )
-        }
         return remainingShorts
+    }
+
+    private fun captureFrame(
+        samples: ShortArray,
+        startShort: Int,
+    ): IntArray? {
+        if (channels <= 0 || startShort < 0 || startShort + channels > samples.size) return null
+        return IntArray(channels) { channel -> samples[startShort + channel].toInt() }
+    }
+
+    private fun formatFrame(frame: IntArray?): String =
+        frame?.joinToString(prefix = "[", postfix = "]") ?: "null"
+
+    private fun formatFrameDelta(
+        previous: IntArray?,
+        next: IntArray?,
+    ): String {
+        if (previous == null || next == null) return "null"
+        val count = minOf(previous.size, next.size)
+        return (0 until count).joinToString(prefix = "[", postfix = "]") { index ->
+            (next[index] - previous[index]).toString()
+        }
+    }
+
+    private fun findClosestFrame(
+        samples: ShortArray,
+        target: IntArray?,
+        startFrame: Int,
+        endFrame: Int,
+    ): FrameMatch? {
+        if (target == null || channels <= 0) return null
+        val frameCount = samples.size / channels
+        val searchStart = startFrame.coerceIn(0, frameCount)
+        val searchEnd = minOf(endFrame, searchStart + MAX_LOOP_ALIGNMENT_FRAMES, frameCount)
+        var bestMatch: FrameMatch? = null
+        for (frameIndex in searchStart until searchEnd) {
+            val frame = captureFrame(samples, frameIndex * channels) ?: continue
+            val score = frameDistance(target, frame) ?: continue
+            val currentBest = bestMatch
+            if (currentBest == null || score < currentBest.score) {
+                bestMatch = FrameMatch(frameIndex, frame, score)
+            }
+        }
+        return bestMatch
+    }
+
+    private fun frameDistance(
+        previous: IntArray?,
+        next: IntArray?,
+    ): Long? {
+        if (previous == null || next == null) return null
+        var score = 0L
+        for (channel in 0 until minOf(previous.size, next.size)) {
+            score += kotlin.math.abs(next[channel] - previous[channel]).toLong()
+        }
+        return score
+    }
+
+    private fun applyLoopBoundaryDeclick(
+        samples: ShortArray,
+        startFrame: Int,
+        endFrame: Int,
+        previousFrame: IntArray?,
+        nextFrame: IntArray?,
+    ): Int {
+        if (previousFrame == null || nextFrame == null || channels <= 0) return 0
+        val score = frameDistance(previousFrame, nextFrame) ?: return 0
+        if (score < LOOP_DECLICK_MIN_SCORE) return 0
+
+        val frames = minOf(LOOP_DECLICK_FRAMES, endFrame - startFrame)
+        if (frames <= 0) return 0
+
+        for (frameOffset in 0 until frames) {
+            val fadeOut = 1.0 - frameOffset.toDouble() / frames.toDouble()
+            val gain = fadeOut * fadeOut
+            val frameShort = (startFrame + frameOffset) * channels
+            for (channel in 0 until channels) {
+                val delta = previousFrame[channel] - nextFrame[channel]
+                val adjusted = samples[frameShort + channel] + (delta * gain).toInt()
+                samples[frameShort + channel] = adjusted.coerceIn(Short.MIN_VALUE.toInt(), Short.MAX_VALUE.toInt()).toShort()
+            }
+        }
+        return frames
+    }
+
+    private data class FrameMatch(
+        val frameIndex: Int,
+        val frame: IntArray,
+        val score: Long,
+    )
+
+    private fun logLoopDebug(message: String) {
+        if (LOOP_DEBUG_LOGS) {
+            Log.d(LOG_TAG, message)
+        }
     }
 
     private fun applyFade(
@@ -486,6 +665,12 @@ internal class LopuPcmDecoder(
         private const val BYTES_PER_SHORT = 2
         private const val OPUS_SAMPLE_RATE = 48_000
         private const val DEFAULT_SEEK_PRE_ROLL_SAMPLES = 3840
+        private const val LOG_TAG = "LopuPcmDecoder"
+        private const val LOOP_DEBUG_LOGS = false
+        private const val FOREVER_DISPLAY_LOOP_COUNT = 10.0
+        private const val MAX_LOOP_ALIGNMENT_FRAMES = 960
+        private const val LOOP_DECLICK_FRAMES = 16
+        private const val LOOP_DECLICK_MIN_SCORE = 2048L
 
         fun canOpen(path: String): Boolean =
             runCatching {
@@ -696,7 +881,8 @@ internal class LopuPcmDecoder(
                 return streamSamples
             }
             if (settings.loopMode == LoopMode.Forever) {
-                return streamSamples.coerceAtLeast(loopEnd)
+                val loopLength = loopEnd - loopStart
+                return loopEnd + (loopLength * (FOREVER_DISPLAY_LOOP_COUNT - 1.0)).toLong()
             }
 
             val loopLength = loopEnd - loopStart
